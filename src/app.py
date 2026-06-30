@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -409,6 +410,25 @@ if __name__ == "__main__":
 
     # 先创建 app 实例, 这样 inspect 线程 closure 能引用 app.menu
     app = NetPulseApp()
+
+    # 启动前主动注册到 Launch Services (避免再次卡顿)
+    # 原因: CFBundleIdentifier "com.local.NetPulse" 在用户系统首次跑时
+    #       不在 lsregister 数据库里, LaunchServices 会全 bundle 扫描 + codesign
+    #       校验导致 3-10s 主线程 block. 现在后台跑 lsregister -f 提前预热.
+    # 注意: subprocess 已在文件顶部 import
+    def register_with_launch_services():
+        try:
+            import time as _t
+            _t.sleep(0.5)  # 让主线程先完成 NSApplication 初始化
+            bundle = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            subprocess.run(
+                ["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+                 "-f", bundle],
+                capture_output=True, timeout=10
+            )
+        except Exception:
+            pass  # 注册失败也不要让 app 崩
+    threading.Thread(target=register_with_launch_services, daemon=True).start()
 
     # 启动时不自动检查 (默认) — 用户主动点 "重新检查" 才跑
     # 原因: run_all_checks 耗时 ~8s, 首次启动 app.run() 后 NSApplication
