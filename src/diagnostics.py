@@ -424,6 +424,8 @@ def run_all_checks() -> dict:
         check_l3_vpn(),
         check_l4_dns(),
         check_l5_external(),
+        check_l6_system_health(),
+        check_l7_codex(),
     ]
 
     # 整体状态:取最差
@@ -438,6 +440,260 @@ def run_all_checks() -> dict:
         "layers": [layer.to_dict() for layer in layers],
         "vpns": list_vpn_services(),
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# L6 系统健康度 (Mac uptime / utun 堆积 / VPN 进程老旧)
+# 用于提前发现 "卡死前兆" — 建议重启
+# ─────────────────────────────────────────────────────────────
+
+def _parse_etime_to_seconds(etime: str) -> int | None:
+    """把 ps 的 ETIME 字段 (例如 '01-23:07:22' 或 '5:30') 解析成秒"""
+    try:
+        if "-" in etime:
+            # days-HH:MM:SS
+            d, hms = etime.split("-", 1)
+            days = int(d)
+            h, m, s = map(int, hms.split(":"))
+            return days * 86400 + h * 3600 + m * 60 + s
+        else:
+            parts = etime.split(":")
+            if len(parts) == 3:
+                h, m, s = map(int, parts)
+                return h * 3600 + m * 60 + s
+            elif len(parts) == 2:
+                m, s = map(int, parts)
+                return m * 60 + s
+        return None
+    except Exception:
+        return None
+
+
+def check_l6_system_health() -> LayerResult:
+    """检查 macOS 系统健康度
+    监控项:
+      1. utun 接口数量 (过多预示网络栈需清理)
+      2. Mac uptime (超过 14 天建议重启)
+      3. VPN 主进程 runtime (Apps Connect 等超过 7 天预兆)
+      4. VPN 扩展 runtime (SkyNE.appex 等超过 30 天预兆)
+    """
+    details = []
+    issues = []
+
+    # 1. utun 接口数量
+    rc, out, _ = _run("ifconfig -a 2>&1 | grep -E '^utun' | wc -l")
+    try:
+        utun_count = int(out)
+    except Exception:
+        utun_count = -1
+
+    if utun_count <= 2:
+        details.append(f"  ✓ utun 接口 {utun_count} 个 (健康)")
+    elif utun_count <= 5:
+        details.append(f"  ⚠ utun 接口 {utun_count} 个 (偏多, 建议清理)")
+        issues.append(("warn", f"utun 接口 {utun_count} 个"))
+    else:
+        details.append(f"  ✗ utun 接口 {utun_count} 个 (过多, 网络栈臃肿)")
+        issues.append(("fail", f"utun 接口 {utun_count} 个"))
+
+    # 2. Mac uptime
+    rc, out, _ = _run("uptime")
+    # '21:55  up 26 days, 5:18, 1 user, ...'
+    import re
+    m = re.search(r"up\s+(.+?),\s+\d+ user", out)
+    uptime_str = m.group(1).strip() if m else "?"
+    details.append(f"  Mac 已运行: {uptime_str}")
+
+    # 把 uptime 字符串转成秒 (粗略, 够判断)
+    days = 0
+    if "day" in uptime_str:
+        days_m = re.search(r"(\d+)\s+day", uptime_str)
+        if days_m:
+            days = int(days_m.group(1))
+    if days <= 7:
+        details.append(f"  ✓ Mac uptime {days} 天 (< 7 天, 干净)")
+    elif days <= 14:
+        details.append(f"  ⚠ Mac uptime {days} 天 (建议这周重启)")
+        issues.append(("warn", f"Mac uptime {days} 天"))
+    else:
+        details.append(f"  ✗ Mac uptime {days} 天 (强烈建议今晚重启)")
+        issues.append(("fail", f"Mac uptime {days} 天"))
+
+    # 3. VPN 主进程 (Apps Connect 等) — 取 PID + ETIME + 可读名字
+    # 用 lsof 找 (Hermes 沙箱下 pgrep 找不到 GUI app)
+    rc, out, _ = _run(
+        "lsof -nP 2>/dev/null | grep -E '/(Apps Connect|clashx|surge|wireguard|tunnelblick)\\.app/' | "
+        "awk '{print $2}' | sort -u | head -3"
+    )
+    vpn_process_etime = None
+    vpn_process_name = None
+    for pid_str in [l.strip() for l in out.splitlines() if l.strip().isdigit()]:
+        # 用 lsof -F0 拿 c 字段 (含空格的真实 command)
+        rc2, cmd_out, _ = _run(f"lsof -p {pid_str} -F0 2>/dev/null")
+        m_cmd = re.search(r"\bc([^\x00]+)", cmd_out) if cmd_out else None
+        vpn_process_name = m_cmd.group(1).strip() if m_cmd else f"VPN(pid={pid_str})"
+        rc3, etime_out, _ = _run(f"ps -o etime= -p {pid_str}")
+        secs = _parse_etime_to_seconds(etime_out.strip())
+        if secs:
+            vpn_process_etime = secs
+            break
+
+    if vpn_process_etime is None:
+        details.append("  → 未发现常见 VPN 客户端主进程")
+    else:
+        days = vpn_process_etime // 86400
+        hours = (vpn_process_etime % 86400) // 3600
+        if days < 1:
+            details.append(f"  ✓ {vpn_process_name} 已运行 {days}天{hours}时 (< 1 天)")
+        elif days < 7:
+            details.append(f"  ⚠ {vpn_process_name} 已运行 {days}天{hours}时 (建议重启 VPN)")
+            issues.append(("warn", f"VPN {vpn_process_name} {days} 天"))
+        else:
+            details.append(f"  ✗ {vpn_process_name} 已运行 {days}天{hours}时 (重启 VPN)")
+            issues.append(("fail", f"VPN {vpn_process_name} {days} 天"))
+
+    # 4. VPN 扩展 (SkyNE.appex 等) — 用 lsof 找 .appex
+    rc, out, _ = _run(
+        "lsof -nP 2>/dev/null | grep -E 'SkyNE\\.appex|\\.appex/SkyNE|wireguard-go|ipsec' | "
+        "awk '{print $2}' | sort -u | head -3"
+    )
+    ext_etime = None
+    ext_name = None
+    for pid_str in [l.strip() for l in out.splitlines() if l.strip().isdigit()]:
+        rc2, cmd_out, _ = _run(f"lsof -p {pid_str} -F0 2>/dev/null")
+        m_cmd = re.search(r"\bc([^\x00]+)", cmd_out) if cmd_out else None
+        ext_name = m_cmd.group(1).strip() if m_cmd else f"VPNExt(pid={pid_str})"
+        rc3, etime_out, _ = _run(f"ps -o etime= -p {pid_str}")
+        secs = _parse_etime_to_seconds(etime_out.strip())
+        if secs:
+            ext_etime = secs
+            break
+
+    if ext_etime is None:
+        details.append("  → 未发现 VPN 扩展 (NetworkExtension)")
+    else:
+        days = ext_etime // 86400
+        if days < 30:
+            details.append(f"  ✓ {ext_name} 扩展已运行 {days} 天 (< 30 天)")
+        elif days < 60:
+            details.append(f"  ⚠ {ext_name} 扩展已运行 {days} 天 (考虑重启)")
+            issues.append(("warn", f"VPN 扩展 {ext_name} {days} 天"))
+        else:
+            details.append(f"  ✗ {ext_name} 扩展已运行 {days} 天 (强烈重启)")
+            issues.append(("fail", f"VPN 扩展 {ext_name} {days} 天"))
+
+    # 汇总
+    if not issues:
+        return LayerResult(
+            name="L6 系统健康度",
+            status=OK,
+            summary=f"utun {utun_count}个 / Mac {days}天 / 系统干净",
+            details=details,
+        )
+
+    has_fail = any(s == "fail" for s, _ in issues)
+    has_warn = any(s == "warn" for s, _ in issues)
+    status = FAIL if has_fail else WARN
+    summary = ", ".join(desc for _, desc in issues[:2])
+    if len(issues) > 2:
+        summary += f" (+{len(issues)-2} 项)"
+
+    return LayerResult(name="L6 系统健康度", status=status, summary=summary, details=details)
+
+
+# ─────────────────────────────────────────────────────────────
+# L7 Codex 连接 (OpenAI API 专项)
+# ─────────────────────────────────────────────────────────────
+
+def check_l7_codex() -> LayerResult:
+    """专项检测 OpenAI / Codex CLI 的网络连接性
+    检测 3 件事:
+      1. DNS 解析 api.openai.com
+      2. TCP 握手 api.openai.com:443
+      3. HTTPS 401 (代表连接通 + 但 API key 无效, 与"网络不通"是不同信号)
+    """
+    details = []
+    has_network_ok = True
+    auth_error_seen = False
+    failure_reason = None
+
+    # 1. DNS 解析
+    rc, out, _ = _run("dig +time=3 +short api.openai.com 2>&1")
+    api_ip = None
+    if rc == 0 and out:
+        ip_match = re.search(r"(\d+\.\d+\.\d+\.\d+)", out)
+        if ip_match:
+            api_ip = ip_match.group(1)
+    if api_ip:
+        details.append(f"  ✓ DNS 解析 api.openai.com → {api_ip}")
+    else:
+        details.append(f"  ✗ DNS 解析 api.openai.com 失败")
+        has_network_ok = False
+        failure_reason = "DNS 解析失败"
+
+    # 2. TCP 握手
+    latency = _tcp_ping("api.openai.com", 443, timeout=4.0)
+    if latency is not None:
+        details.append(f"  ✓ TCP 握手 api.openai.com:443 ({latency:.0f}ms)")
+    else:
+        details.append(f"  ✗ TCP 握手 api.openai.com:443 超时")
+        has_network_ok = False
+        if not failure_reason:
+            failure_reason = "TCP 握手失败"
+
+    # 3. HTTPS 试探 (用无效 key, 看服务器响应)
+    rc, out, _ = _run(
+        "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "
+        "-H 'Authorization: Bearer probe' "
+        "-H 'Content-Type: application/json' "
+        "-X POST https://api.openai.com/v1/chat/completions "
+        "-d '{\"model\":\"gpt-4o-mini\",\"messages\":[],\"max_tokens\":1}'"
+    )
+    http_code = out.strip() if out else ""
+    if http_code in ("401", "400"):
+        # 401 = 网络通但 key 无效 (正常状态, 不是连接问题)
+        # 400 = 我们的 probe body 太简陋, 但说明**连接到了 OpenAI**
+        details.append(f"  ✓ HTTPS 到达 OpenAI (HTTP {http_code} — 网络层通, key 问题不在此处)")
+        auth_error_seen = True
+    elif http_code == "200":
+        # 罕见 — probe key 居然被认了
+        details.append(f"  ? HTTPS 200 (异常, probe key 不应有效)")
+    elif http_code.startswith("2"):
+        details.append(f"  ✓ HTTPS {http_code} (OpenAI 可达)")
+    elif http_code in ("", "000"):
+        details.append(f"  ✗ HTTPS 无响应 (网络层阻塞)")
+        has_network_ok = False
+        if not failure_reason:
+            failure_reason = "HTTPS 无响应"
+    elif http_code.startswith(("5", "4")):
+        # 5xx 是 OpenAI 服务问题
+        details.append(f"  ⚠ HTTPS {http_code} (OpenAI 服务端问题, 不是你网络)")
+    else:
+        details.append(f"  ? HTTPS {http_code} (未知状态)")
+
+    # 判定整体状态
+    if has_network_ok and auth_error_seen:
+        # 网络 OK, 但 key 无效 — 这是配置问题不是网络问题
+        return LayerResult(
+            name="L7 Codex 连接",
+            status=OK,
+            summary="网络层 100% 通, key 问题在 OpenAI 账户侧",
+            details=details,
+        )
+    elif has_network_ok:
+        return LayerResult(
+            name="L7 Codex 连接",
+            status=OK,
+            summary="OpenAI 可达",
+            details=details,
+        )
+    else:
+        return LayerResult(
+            name="L7 Codex 连接",
+            status=FAIL,
+            summary=f"网络层 {failure_reason}",
+            details=details,
+        )
 
 
 # ─────────────────────────────────────────────────────────────

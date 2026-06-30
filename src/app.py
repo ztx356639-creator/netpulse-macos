@@ -48,11 +48,14 @@ class NetPulseApp(rumps.App):
         ]
         # 状态项(动态刷新)
         self.status_items: list[rumps.MenuItem] = []
-        for i in range(5):
+        for i in range(7):  # L1-L7 (5 网络层 + L6 系统健康度 + L7 Codex)
             item = rumps.MenuItem(f"L{i+1} ...", callback=None)
             item.set_callback(None)
             self.status_items.append(item)
             self.menu.add(item)
+
+        # L7 下面的一个快捷操作: 测试 Codex (触发重新 L7 检查)
+        # 不需要单独的菜单项, L7 点击弹报告就行
 
         self.menu.add(rumps.MenuItem("---"))
         self.menu.add(rumps.MenuItem("🔄 重新检查", callback=self.run_check_now))

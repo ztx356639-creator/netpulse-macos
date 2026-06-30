@@ -1,6 +1,6 @@
 # NetPulse 📡
 
-> macOS 菜单栏网络诊断小工具 — 一眼看清"VPN 登不上"的根因
+> macOS 菜单栏网络诊断小工具 — **7 层独立检测**,一眼看清"VPN 登不上"和"Mac 该不该重启"的根因
 
 ## 它解决什么问题
 
@@ -10,11 +10,12 @@
 - VPN 隧道本身?
 - DNS 解析挂了?
 - 外网本身不通?
+- **Mac 系统健康度是否需要重启?**
+- **Codex/OpenAI API 是否网络可达?**
 
-NetPulse 常驻菜单栏,把网络栈拆成 **5 层独立检测**,每层用 🟢🟡🔴 显示状态。
-VPN 断了? 立刻知道是哪一层的事,不用瞎猜。
+NetPulse 常驻菜单栏,把网络栈 + 系统健康拆成 **7 层独立检测**,每层用 🟢🟡🔴 显示状态。
 
-## 5 层诊断
+## 7 层诊断
 
 | 层 | 检测 | 工具 |
 |---|---|---|
@@ -23,6 +24,32 @@ VPN 断了? 立刻知道是哪一层的事,不用瞎猜。
 | L3 VPN 隧道 | VPN 配置 + 连接状态 | `scutil --nc` |
 | L4 DNS | 域名能否解析 | `dig` |
 | L5 外网 | 实际能否连通目标 | 多目标 TCP 探测 |
+| **L6 系统健康度** | **utun 堆积 / Mac uptime / VPN 进程老化** | `ifconfig` / `uptime` / `lsof` |
+| **L7 Codex 连接** | **OpenAI API 网络可达 + key 区分** | `dig` / socket / `curl` |
+
+## 关于 L6 系统健康度
+
+L6 是**提前发现"卡死前兆"的关键**。它监测 4 个指标:
+
+| 指标 | OK | WARN | FAIL |
+|---|---|---|---|
+| utun 接口数量 | ≤2 | 3-5 | ≥6 |
+| Mac uptime | ≤7 天 | 7-14 天 | >14 天 |
+| VPN 主进程 ETIME | <1 天 | 1-7 天 | >7 天 |
+| VPN 扩展 ETIME (SkyNE 等) | <30 天 | 30-60 天 | >60 天 |
+
+**任何一项 FAIL 都建议今晚重启**。
+
+**完整诊断** (不只是 L6 — 还有其它网络栈检测) 见菜单栏点击 "NetPulse 详情"。
+
+## 关于 L7 Codex 连接
+
+L7 专项检测 OpenAI API,做三件事:
+1. DNS 解析 api.openai.com
+2. TCP 握手 443
+3. HTTPS 试探(用 probe key,期望 401)
+
+**401 = 网络通但 key 无效** → 这条会明确告诉你"**网络层 100% 通,key 问题在 OpenAI 账户侧**",省得你跟网络死磕。
 
 ## 截图示意
 
@@ -78,11 +105,19 @@ pip install rumps py2app
 ./run.sh           # 显示帮助
 ./run.sh run       # 启动菜单栏 app (源码模式)
 ./run.sh test      # 跑诊断引擎单元测试
-./run.sh check     # 跑一次诊断, 输出 JSON
+./run.sh check     # 跑一次诊断输出 JSON (7 层)
 ./run.sh build     # 打包 + 部署到 ~/Documents/skills/
 ./run.sh smoke     # 跑 .app bundle 的 smoke test
 ./run.sh inspect   # 启动 NS_MENU_INSPECT 验证菜单结构
 ```
+
+### 看每层的细节
+
+```bash
+./run.sh check | python3 -m json.tool | head -80
+```
+
+会输出 JSON 包含 `layers` 数组(L1-L7),每项含 `name/status/summary/details`,直接看哪层出问题。
 
 ## 技术栈
 
