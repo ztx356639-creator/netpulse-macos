@@ -48,7 +48,7 @@ class NetPulseApp(rumps.App):
         ]
         # 状态项(动态刷新)
         self.status_items: list[rumps.MenuItem] = []
-        for i in range(7):  # L1-L7 (5 网络层 + L6 系统健康度 + L7 Codex)
+        for i in range(8):  # L1-L8 (5 网络层 + L6 系统健康度 + L7 Codex + L8 Wi-Fi/流量)
             item = rumps.MenuItem(f"L{i+1} ...", callback=None)
             item.set_callback(None)
             self.status_items.append(item)
@@ -410,9 +410,16 @@ if __name__ == "__main__":
     # 先创建 app 实例, 这样 inspect 线程 closure 能引用 app.menu
     app = NetPulseApp()
 
-    # 启动时立即检查一次(在后台线程)
-    def first_check():
-        time.sleep(0.5)  # 让菜单先显示
-        app._run_check_async()
-    threading.Thread(target=first_check, daemon=True).start()
+    # 启动时不自动检查 (默认) — 用户主动点 "重新检查" 才跑
+    # 原因: run_all_checks 耗时 ~8s, 首次启动 app.run() 后 NSApplication
+    # 主线程被这个后台操作拖慢 (cocoa rumor: GPU/dispatch 全被占用),
+    # 导致菜单栏图标看起来卡住. 用户体感是 "开几次才能正常"
+    #
+    # 如需自动检查, 在菜单里点 "自动监控 (每 30s)" 启用
+    NS_AUTO_FIRST_CHECK = os.environ.get("NS_AUTO_FIRST_CHECK") == "1"
+    if NS_AUTO_FIRST_CHECK:
+        def first_check():
+            time.sleep(3.0)  # 留 3s 给菜单完全稳定
+            app._run_check_async()
+        threading.Thread(target=first_check, daemon=True).start()
     app.run()

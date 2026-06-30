@@ -1,6 +1,6 @@
 # NetPulse 📡
 
-> macOS 菜单栏网络诊断小工具 — **7 层独立检测**,一眼看清"VPN 登不上"和"Mac 该不该重启"的根因
+> macOS 菜单栏网络诊断小工具 — **8 层独立检测**,一眼看清"VPN 登不上"和"Mac 该不该重启"的根因
 
 ## 它解决什么问题
 
@@ -12,10 +12,11 @@
 - 外网本身不通?
 - **Mac 系统健康度是否需要重启?**
 - **Codex/OpenAI API 是否网络可达?**
+- **Wi-Fi 信号弱?流量异常?**
 
-NetPulse 常驻菜单栏,把网络栈 + 系统健康拆成 **7 层独立检测**,每层用 🟢🟡🔴 显示状态。
+NetPulse 常驻菜单栏,把网络栈 + 系统健康 拆成 **8 层独立检测**,每层用 🟢🟡🔴 显示状态。
 
-## 7 层诊断
+## 8 层诊断
 
 | 层 | 检测 | 工具 |
 |---|---|---|
@@ -26,6 +27,7 @@ NetPulse 常驻菜单栏,把网络栈 + 系统健康拆成 **7 层独立检测**
 | L5 外网 | 实际能否连通目标 | 多目标 TCP 探测 |
 | **L6 系统健康度** | **utun 堆积 / Mac uptime / VPN 进程老化** | `ifconfig` / `uptime` / `lsof` |
 | **L7 Codex 连接** | **OpenAI API 网络可达 + key 区分** | `dig` / socket / `curl` |
+| **L8 Wi-Fi/流量** | **当前信号强度 (RSSI/SNR) + 实时流量速率** | `system_profiler` / `netstat -ib` |
 
 ## 关于 L6 系统健康度
 
@@ -50,6 +52,20 @@ L7 专项检测 OpenAI API,做三件事:
 3. HTTPS 试探(用 probe key,期望 401)
 
 **401 = 网络通但 key 无效** → 这条会明确告诉你"**网络层 100% 通,key 问题在 OpenAI 账户侧**",省得你跟网络死磕。
+
+## 关于 L8 Wi-Fi / 流量
+
+L8 做两件事,合并报告:
+
+**L8a**: 用 `system_profiler SPAirPortDataType` 读当前 Wi-Fi 信号 (RSSI / Noise / SNR):
+- 🟢 ≥ -50 dBm: 强
+- 🟢 -65 ~ -50 dBm: 良好
+- 🟡 -75 ~ -65 dBm: 一般 (WARN 状态)
+- 🔴 < -75 dBm: 弱 (FAIL 状态)
+
+**L8b**: 用 `netstat -ib` 两次采样(间隔 2 秒)算 en0 收/发字节速率。
+
+macOS 12+ 默认隐藏 SSID 隐私(`<redacted>`),代码会显示 `<private>` 替代。
 
 ## 截图示意
 

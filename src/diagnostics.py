@@ -426,7 +426,8 @@ def run_all_checks() -> dict:
         check_l5_external(),
         check_l6_system_health(),
         check_l7_codex(),
-    ]
+        check_l8_wifi_traffic(),
+    ] 
 
     # 整体状态:取最差
     priority = {FAIL: 3, WARN: 2, OK: 1}
@@ -694,6 +695,179 @@ def check_l7_codex() -> LayerResult:
             summary=f"网络层 {failure_reason}",
             details=details,
         )
+
+
+# ─────────────────────────────────────────────────────────────
+# L8 WiFi 信号强度 + 流量监控
+# ─────────────────────────────────────────────────────────────
+
+def check_l8_wifi_traffic() -> LayerResult:
+    """L8a: 当前 Wi-Fi 信号强度 (RSSI / Noise / SNR)
+    L8b: 流量监控 (en0 收/发字节速率 — 5 秒间隔采样)
+
+    设计要点:
+      - L8a 用 system_profiler SPAirPortDataType 解析当前 SSID 的信号
+      - L8b 用 netstat -ib 取 Ibytes/Obytes 两次采样算速率
+      - 两个检测合并成一个 LayerResult (避免 run_all_checks 又慢 1 倍)
+    """
+    details = []
+    issues = []  # (level, desc)
+
+    # ─── L8a: Wi-Fi 信号强度 ───
+    rssi_dbm = None
+    noise_dbm = None
+    ssid = None
+    channel = None
+
+    # system_profiler 输出很长, 限制一下区域 (只取当前网络信息)
+    rc, out, _ = _run(
+        "system_profiler SPAirPortDataType 2>/dev/null | "
+        "awk '/Current Network Information:/{flag=1} flag; /Other Local Wi-Fi/{flag=0}'",
+        timeout=8.0
+    )
+    if rc == 0 and out:
+        # system_profiler 输出格式:
+        #   Current Network Information:
+        #       <SSID 名字>:
+        #           PHY Mode: 802.11 a/b/g/n/ac/ax
+        #           Channel: 44 (5GHz, 160MHz)
+        #           Signal / Noise: -57 dBm / -92 dBm
+        # SSID 行的判定: 缩进 >= 4 个空格, 但不是 "PHY Mode:" 等已知字段名
+        lines = out.splitlines()
+        skip_labels = {"PHY Mode", "Channel", "Network Type", "Security",
+                       "Signal / Noise", "Other Local Wi-Fi", "Current Network Information"}
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped in skip_labels:
+                continue
+            # SSID 行: "    <name>:" (空行后第一行)
+            if line.endswith(":") and not stripped.startswith(("<", "/")):
+                ssid = stripped.rstrip(":")
+                continue
+            # Signal / Noise: -57 dBm / -92 dBm
+            m_sn = re.search(r"Signal\s*/\s*Noise:\s*(-?\d+)\s*dBm\s*/\s*(-?\d+)\s*dBm", line)
+            if m_sn:
+                rssi_dbm = int(m_sn.group(1))
+                noise_dbm = int(m_sn.group(2))
+                continue
+            # Channel: 44 (5GHz, 160MHz)
+            m_chan = re.search(r"Channel:\s*(\d+)", line)
+            if m_chan and channel is None:
+                channel = m_chan.group(1)
+
+    # 判定信号强度
+    if rssi_dbm is not None:
+        snr = rssi_dbm - (noise_dbm or -100) if noise_dbm else None
+        if rssi_dbm >= -50:
+            sig_status = "强"
+            sig_icon = "🟢"
+        elif rssi_dbm >= -65:
+            sig_status = "良好"
+            sig_icon = "🟢"
+        elif rssi_dbm >= -75:
+            sig_status = "一般"
+            sig_icon = "🟡"
+        else:
+            sig_status = "弱"
+            sig_icon = "🔴"
+
+        snr_str = f" SNR {snr}dB" if snr is not None else ""
+        ch_str = f" ch{channel}" if channel else ""
+        details.append(f"  {sig_icon} Wi-Fi 信号: {rssi_dbm}dBm (噪声 {noise_dbm}dBm){snr_str}{ch_str}")
+        # macOS 12+ 默认隐藏 SSID → 显示 <redacted>, 给用户提示而非空字符串
+        if ssid and ssid != "Current Network Information":
+            if "<" in ssid:
+                details.append(f"  SSID: <私有> (macOS 隐藏)")
+            else:
+                details.append(f"  SSID: {ssid}")
+
+        if rssi_dbm < -75:
+            issues.append(("warn", f"Wi-Fi 信号 {rssi_dbm}dBm ({sig_status})"))
+    else:
+        # 没拿到 RSSI — 多半是因为没接 Wi-Fi (网线/有线)
+        rc2, media_out, _ = _run("ifconfig en0 2>&1 | grep -E 'media:|status:'")
+        media = (media_out or "").strip()
+        if "autoselect" in media or "status: active" in media:
+            details.append(f"  → en0 {media} (无 Wi-Fi, 用以太网)")
+        else:
+            details.append(f"  → 无法读取 Wi-Fi 信号 ({media or 'en0 状态未知'})")
+
+    # ─── L8b: 流量监控 (en0 速率) ───
+    rc, out1, _ = _run("netstat -ib 2>/dev/null | grep -E '^en0\\s' | head -1")
+    if rc == 0 and out1:
+        # 列格式: en0 1500 ... Ipkts ... Ibytes Opkts ... Obytes
+        parts = out1.split()
+        try:
+            ibytes_1 = int(parts[6])  # Ibytes 列
+            obytes_1 = int(parts[9])  # Obytes 列
+        except (IndexError, ValueError):
+            ibytes_1 = obytes_1 = None
+    else:
+        ibytes_1 = obytes_1 = None
+
+    # 2 秒间隔采样 (比原设计 5 秒更短, 不让 run_all_checks 整体超过 10 秒)
+    time.sleep(2)
+    rc, out2, _ = _run("netstat -ib 2>/dev/null | grep -E '^en0\\s' | head -1")
+    if rc == 0 and out2:
+        parts = out2.split()
+        try:
+            ibytes_2 = int(parts[6])
+            obytes_2 = int(parts[9])
+        except (IndexError, ValueError):
+            ibytes_2 = obytes_2 = None
+    else:
+        ibytes_2 = obytes_2 = None
+
+    def fmt_rate(bps: float | None) -> str:
+        if bps is None:
+            return "?/s"
+        if bps < 1024:
+            return f"{bps:.0f}B/s"
+        if bps < 1024 * 1024:
+            return f"{bps / 1024:.1f}KB/s"
+        return f"{bps / 1024 / 1024:.2f}MB/s"
+
+    if ibytes_1 is not None and ibytes_2 is not None and obytes_1 is not None and obytes_2 is not None:
+        delta_in = ibytes_2 - ibytes_1
+        delta_out = obytes_2 - obytes_1
+        rate_in = delta_in / 2.0  # bytes/sec
+        rate_out = delta_out / 2.0
+        details.append(f"  📊 流量: ↓ {fmt_rate(rate_in)}  ↑ {fmt_rate(rate_out)} (en0, 2s 采样)")
+        details.append(f"  累计: 下行 {_fmt_bytes(ibytes_2)}, 上行 {_fmt_bytes(obytes_2)}")
+    else:
+        details.append("  → 无法读取 en0 流量统计")
+
+    # 汇总
+    if not issues:
+        # OK 状态
+        parts = []
+        if rssi_dbm is not None and rssi_dbm < 0:
+            parts.append(f"Wi-Fi {rssi_dbm}dBm")
+        parts.append("流量 ok")
+        summary = ", ".join(parts)
+        return LayerResult(
+            name="L8 Wi-Fi/流量",
+            status=OK,
+            summary=summary,
+            details=details,
+        )
+
+    # WARN/FAIL 路径
+    has_fail = any(s == "fail" for s, _ in issues)
+    status = FAIL if has_fail else WARN
+    summary = ", ".join(desc for _, desc in issues)
+    return LayerResult(name="L8 Wi-Fi/流量", status=status, summary=summary, details=details)
+
+
+def _fmt_bytes(n: int) -> str:
+    """字节数格式化 (1024 进制)"""
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 ** 2:
+        return f"{n/1024:.1f}KB"
+    if n < 1024 ** 3:
+        return f"{n/1024/1024:.1f}MB"
+    return f"{n/1024/1024/1024:.2f}GB"
 
 
 # ─────────────────────────────────────────────────────────────
