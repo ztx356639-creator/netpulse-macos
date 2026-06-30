@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Virtual env (项目本地)
+.venv/
+
+# py2app 打包产物 (重新打包时由 setup.py py2app 生成)
+build/
+dist/
+*.app
+
+# macOS
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~

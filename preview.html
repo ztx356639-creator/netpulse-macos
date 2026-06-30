@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>NetPulse 菜单预览</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro", sans-serif;
+    background: #1e1e1e; color: #e0e0e0;
+    margin: 0; padding: 40px;
+    display: flex; justify-content: center; align-items: flex-start; gap: 40px;
+  }
+  .topbar {
+    width: 100%; height: 28px; background: rgba(0,0,0,0.5);
+    border-radius: 6px 6px 0 0; padding: 0 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: fixed; top: 0; left: 0; right: 0;
+    border-bottom: 1px solid #333;
+  }
+  .menubar-icons { display: flex; gap: 12px; align-items: center; }
+  .icon { font-size: 14px; }
+  .netpulse-icon {
+    background: #2a2a2a; padding: 4px 8px; border-radius: 4px;
+    font-size: 13px; cursor: pointer;
+  }
+  .dropdown {
+    background: #2d2d2d; border: 1px solid #444; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    width: 360px; overflow: hidden; margin-top: 36px;
+  }
+  .menu-item {
+    padding: 6px 14px; font-size: 13px; color: #e0e0e0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .menu-item:hover { background: #3a3a3a; }
+  .menu-separator { height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0; }
+  .menu-header { font-weight: 600; color: #fff; }
+  .layer-ok { color: #4ade80; }
+  .layer-warn { color: #fbbf24; }
+  .layer-fail { color: #f87171; }
+  .hint {
+    margin-top: 30px; padding: 16px; background: #2d2d2d;
+    border-radius: 8px; border-left: 3px solid #fbbf24;
+    max-width: 360px; font-size: 13px; line-height: 1.6;
+  }
+  code { background: #111; padding: 2px 6px; border-radius: 3px; color: #fbbf24; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>🍎  2026/6/28 21:30</div>
+  <div class="menubar-icons">
+    <span class="icon">🔋</span>
+    <span class="icon">📶</span>
+    <span class="icon">🔍</span>
+    <span class="icon">🎵</span>
+    <span class="netpulse-icon">📡 🟢</span>
+  </div>
+</div>
+
+<div style="display:flex; flex-direction:column; gap:20px; margin-top: 40px;">
+
+<div class="dropdown">
+  <div class="menu-item menu-header">🚀 网络体检</div>
+  <div class="menu-separator"></div>
+  <div class="menu-item layer-ok">✓ L1 物理链路 — en0 UP, IP=192.168.0.71</div>
+  <div class="menu-item layer-ok">✓ L2 网关 — 192.168.0.1 可达 (8ms)</div>
+  <div class="menu-item layer-warn">⚠ L3 VPN 隧道 — 1 个 VPN 配置,均未连接</div>
+  <div class="menu-item layer-ok">✓ L4 DNS — baidu.com → 198.18.0.103</div>
+  <div class="menu-item layer-fail">✗ L5 外网 — 完全无外网连接</div>
+  <div class="menu-separator"></div>
+  <div class="menu-item">🔄 重新检查</div>
+  <div class="menu-item">📋 复制报告</div>
+  <div class="menu-item">⏱  自动监控 (每 30s) ✓</div>
+  <div class="menu-separator"></div>
+  <div class="menu-item menu-header">⚙  VPN 配置</div>
+  <div class="menu-item">  ○ Apps Connect</div>
+  <div class="menu-separator"></div>
+  <div class="menu-item">ℹ️  关于</div>
+  <div class="menu-item">❌ 退出</div>
+</div>
+
+<div class="hint">
+  <strong>📡 NetPulse 菜单栏小工具</strong><br><br>
+  这是 NetPulse 在 macOS 菜单栏的样子(模拟)。<br><br>
+  <strong>真实运行:</strong><br>
+  在终端执行 <code>~/Documents/NetPulse/run.sh</code><br>
+  菜单栏会出现 <code>📡 🟢</code> 图标,点击下拉看完整诊断。<br><br>
+  <strong>5 层检测:</strong><br>
+  L1 物理链路 / L2 网关 / L3 VPN / L4 DNS / L5 外网<br>
+  整体状态取最差:🟢 全绿 / 🟡 有警告 / 🔴 有故障
+</div>
+
+</div>
+
+</body>
+</html>
