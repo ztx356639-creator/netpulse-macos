@@ -70,8 +70,6 @@ pip install rumps py2app
 
 # 5. 打包成 .app
 ./run.sh build
-# 自动部署到 ~/Documents/skills/NetPulse.app
-# 副本在 ~/Desktop/NetPulse.app
 ```
 
 ## 命令行用法
